@@ -1,19 +1,17 @@
 --[[
     ═════════════════════════════════════════════════════════════════════════
-    🌱 GROWBLOX AUTO-RECON & 1-CLICK ALL-IN-ONE CLIPBOARD SPY 🌱
+    🌱 GROWBLOX AUTO-RECON & 1-CLICK ALL-IN-ONE CLIPBOARD SPY (v2.0) 🌱
     Author: iannn (@brilliantgibrann16) • Project: growblox-hub
     Target: Growblox (PlaceId: 112863874972771)
     ═════════════════════════════════════════════════════════════════════════
     FITUR OTOMATIS:
-    1. Sekali execute, LANGSUNG otomatis copy struktur awal ke clipboard.
-    2. Muncul UI mini melayang di layar (Floating Liquid Glass Card).
-    3. Live namecall hook otomatis rekam setiap remote saat Bubu mukul/naruh blok.
-    4. Tombol 1-Click "📋 COPY SEMUA DATA KE CLIPBOARD" buat copy gabungan:
-       - Semua RemoteEvent & RemoteFunction di ReplicatedStorage
-       - Semua ModuleScript (Data, Items, Configs)
-       - Struktur Workspace (Folder Tiles, Blocks, Drops)
-       - Tools di Backpack
-       - Live Intercepted Remotes dengan tipe dan nilai argumen lengkap!
+    1. Deep-dump skema paket ByteNet (Net.punch, Net.tile, Net.take, Net.harvest).
+    2. Decompile source code Net & WorldCodec (jika didukung executor).
+    3. Hook langsung Net.punch.send, Net.tile.send, Net.call, dan Namecall.
+    4. Indikator Live Checklist di layar:
+       - 🥊 Status Punch: [BELUM] -> [✔ TERDETEKSI!]
+       - 🧱 Status Place: [BELUM] -> [✔ TERDETEKSI!]
+    5. Tombol 1-Click Copy ke Clipboard begitu Bubu selesai tes.
     ═════════════════════════════════════════════════════════════════════════
 ]]--
 
@@ -31,30 +29,53 @@ while not LocalPlayer do
     LocalPlayer = Players.LocalPlayer
 end
 
--- ═════════════════════════════════════════════════════════════════════════
--- [1] DATA CONTAINER & COLLECTOR
--- ═════════════════════════════════════════════════════════════════════════
 local DumpResults = {
     PlaceId = game.PlaceId,
     JobId = game.JobId,
+    Player = LocalPlayer.Name,
+    UserId = LocalPlayer.UserId,
     Remotes = {},
     Modules = {},
     WorkspaceRoots = {},
     BackpackTools = {},
     PlayerGuiRoots = {},
+    PlayerScripts = {},
+    NetPackets = {},
+    NetSource = nil,
     CapturedTraffic = {},
-    ModuleExports = {},
 }
 
-local function runStaticScan()
-    DumpResults.Remotes = {}
-    DumpResults.Modules = {}
-    DumpResults.WorkspaceRoots = {}
-    DumpResults.BackpackTools = {}
-    DumpResults.PlayerGuiRoots = {}
-    DumpResults.ModuleExports = {}
+local PunchDetected = false
+local PlaceDetected = false
 
-    -- Scan ReplicatedStorage
+-- ═════════════════════════════════════════════════════════════════════════
+-- [1] DEEP TABLE SERIALIZER
+-- ═════════════════════════════════════════════════════════════════════════
+local function deepSerialize(tbl, depth, maxDepth)
+    depth = depth or 1
+    maxDepth = maxDepth or 3
+    if depth > maxDepth then return "{...}" end
+    if type(tbl) ~= "table" then return tostring(tbl) end
+
+    local entries = {}
+    for k, v in pairs(tbl) do
+        local keyName = tostring(k)
+        if type(v) == "table" then
+            table.insert(entries, keyName .. " = " .. deepSerialize(v, depth + 1, maxDepth))
+        elseif type(v) == "function" then
+            table.insert(entries, keyName .. " = [function]")
+        else
+            table.insert(entries, keyName .. " = " .. tostring(v) .. " (" .. typeof(v) .. ")")
+        end
+    end
+    return "{\n" .. string.rep("  ", depth) .. table.concat(entries, ",\n" .. string.rep("  ", depth)) .. "\n" .. string.rep("  ", depth - 1) .. "}"
+end
+
+-- ═════════════════════════════════════════════════════════════════════════
+-- [2] STATIC RECON & NET INTROSPECTION
+-- ═════════════════════════════════════════════════════════════════════════
+local function runStaticScan()
+    -- Scan Remotes & Modules
     for _, desc in ipairs(RS:GetDescendants()) do
         if desc:IsA("RemoteEvent") then
             table.insert(DumpResults.Remotes, { Type = "RemoteEvent", Name = desc.Name, Path = desc:GetFullName() })
@@ -65,26 +86,26 @@ local function runStaticScan()
         end
     end
 
-    -- Introspect Key Shared Modules (Net, ItemDB, WorldCodec, BlocksDB)
+    -- Deep Introspect Shared.Net
     local sharedFolder = RS:FindFirstChild("Shared")
     if sharedFolder then
-        local targetModules = { "Net", "ItemDB", "WorldCodec", "BlocksDB", "Inventory", "DropBox", "CommandList" }
-        for _, modName in ipairs(targetModules) do
-            local mod = sharedFolder:FindFirstChild(modName)
-            if mod and mod:IsA("ModuleScript") then
-                local s, res = pcall(require, mod)
-                if s and type(res) == "table" then
-                    local keys = {}
-                    for k, v in pairs(res) do
-                        local valPreview = tostring(v)
-                        if typeof(v) == "table" then
-                            valPreview = "{... " .. tostring(#v) .. " items}"
-                        end
-                        table.insert(keys, string.format("%s (%s = %s)", tostring(k), typeof(v), valPreview:sub(1, 40)))
+        local netMod = sharedFolder:FindFirstChild("Net")
+        if netMod and netMod:IsA("ModuleScript") then
+            local s, Net = pcall(require, netMod)
+            if s and type(Net) == "table" then
+                for k, v in pairs(Net) do
+                    if type(v) == "table" then
+                        DumpResults.NetPackets[tostring(k)] = deepSerialize(v, 1, 3)
                     end
-                    table.sort(keys)
-                    DumpResults.ModuleExports[modName] = keys
                 end
+            end
+
+            -- Try Decompile Net
+            local decomp = decompile or (syn and syn.decompile) or (fluxus and fluxus.decompile)
+            if type(decomp) == "function" then
+                pcall(function()
+                    DumpResults.NetSource = decomp(netMod)
+                end)
             end
         end
     end
@@ -98,11 +119,21 @@ local function runStaticScan()
         })
     end
 
-    -- Scan Backpack Tools
+    -- Scan Backpack
     local bp = LocalPlayer:FindFirstChild("Backpack")
     if bp then
         for _, t in ipairs(bp:GetChildren()) do
             table.insert(DumpResults.BackpackTools, { Name = t.Name, ClassName = t.ClassName })
+        end
+    end
+
+    -- Scan PlayerScripts
+    local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+    if ps then
+        for _, desc in ipairs(ps:GetDescendants()) do
+            if desc:IsA("LocalScript") or desc:IsA("ModuleScript") then
+                table.insert(DumpResults.PlayerScripts, { Name = desc.Name, Path = desc:GetFullName(), ClassName = desc.ClassName })
+            end
         end
     end
 
@@ -118,66 +149,180 @@ end
 runStaticScan()
 
 -- ═════════════════════════════════════════════════════════════════════════
--- [2] REPORT BUILDER & EXPORTER
+-- [3] HOOK NET PACKETS & NAMECALL
+-- ═════════════════════════════════════════════════════════════════════════
+local OnTrafficCaptured = nil
+
+-- 3A. Hook Net Module Functions directly
+local sharedFolder = RS:FindFirstChild("Shared")
+if sharedFolder then
+    local netMod = sharedFolder:FindFirstChild("Net")
+    if netMod and netMod:IsA("ModuleScript") then
+        local s, Net = pcall(require, netMod)
+        if s and type(Net) == "table" then
+            -- Hook individual packet.send
+            for packetName, packet in pairs(Net) do
+                if type(packet) == "table" and type(packet.send) == "function" then
+                    local oldSend = packet.send
+                    packet.send = function(...)
+                        local args = { ... }
+                        local encodedArgs = "{"
+                        for i, arg in ipairs(args) do
+                            local sArg = tostring(arg)
+                            if type(arg) == "table" then
+                                pcall(function() sArg = HttpService:JSONEncode(arg) end)
+                            end
+                            encodedArgs = encodedArgs .. string.format("[%d]=%s, ", i, sArg)
+                        end
+                        encodedArgs = encodedArgs .. "}"
+
+                        local detail = string.format("[Net.%s.send] %s", packetName, encodedArgs)
+                        table.insert(DumpResults.CapturedTraffic, 1, {
+                            Time = os.date("%X"),
+                            Detail = detail,
+                        })
+
+                        local pLower = packetName:lower()
+                        if pLower:find("punch") or pLower:find("hit") or pLower:find("break") then
+                            PunchDetected = true
+                        elseif pLower:find("tile") or pLower:find("place") or pLower:find("plant") then
+                            PlaceDetected = true
+                        end
+
+                        if OnTrafficCaptured then
+                            pcall(OnTrafficCaptured, detail)
+                        end
+                        return oldSend(...)
+                    end
+                end
+            end
+
+            -- Hook Net.call
+            if type(Net.call) == "function" then
+                local oldCall = Net.call
+                Net.call = function(...)
+                    local args = { ... }
+                    local detail = string.format("[Net.call] Args: %s", deepSerialize(args, 1, 2))
+                    table.insert(DumpResults.CapturedTraffic, 1, {
+                        Time = os.date("%X"),
+                        Detail = detail,
+                    })
+                    local a1 = tostring(args[1] or ""):lower()
+                    if a1:find("punch") or a1:find("break") then
+                        PunchDetected = true
+                    elseif a1:find("tile") or a1:find("place") then
+                        PlaceDetected = true
+                    end
+                    if OnTrafficCaptured then
+                        pcall(OnTrafficCaptured, detail)
+                    end
+                    return oldCall(...)
+                end
+            end
+        end
+    end
+end
+
+-- 3B. Hook Namecall (for WorldRemotes & ByteNetReliable)
+local rawMeta = getrawmetatable and getrawmetatable(game)
+if rawMeta and setreadonly then
+    setreadonly(rawMeta, false)
+    local oldNamecall = rawMeta.__namecall
+    rawMeta.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
+            if self:IsA("RemoteEvent") or self:IsA("RemoteFunction") then
+                local args = { ... }
+                local strArgs = {}
+                for i, v in ipairs(args) do
+                    local valStr = tostring(v)
+                    if typeof(v) == "table" then
+                        pcall(function() valStr = HttpService:JSONEncode(v) end)
+                    elseif typeof(v) == "Instance" then
+                        valStr = v:GetFullName()
+                    elseif typeof(v) == "buffer" then
+                        valStr = string.format("[buffer len=%d]", buffer.len(v))
+                    end
+                    table.insert(strArgs, string.format("arg%d(%s)=%s", i, typeof(v), valStr))
+                end
+
+                local detail = string.format("[%s] %s:%s(%s)", method, self:GetFullName(), method, table.concat(strArgs, ", "))
+                table.insert(DumpResults.CapturedTraffic, 1, {
+                    Time = os.date("%X"),
+                    Detail = detail,
+                    Remote = self,
+                })
+
+                local rName = self.Name:lower()
+                if rName:find("tile") or rName:find("place") then
+                    PlaceDetected = true
+                elseif rName:find("punch") or rName:find("break") then
+                    PunchDetected = true
+                end
+
+                if #DumpResults.CapturedTraffic > 80 then
+                    table.remove(DumpResults.CapturedTraffic)
+                end
+
+                if OnTrafficCaptured then
+                    pcall(OnTrafficCaptured, detail)
+                end
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
+    setreadonly(rawMeta, true)
+end
+
+-- ═════════════════════════════════════════════════════════════════════════
+-- [4] REPORT GENERATOR
 -- ═════════════════════════════════════════════════════════════════════════
 local function buildFullReport()
     local text = "═════════════════════════════════════════════════════════════\n"
-    text = text .. "🌱 GROWBLOX COMPREHENSIVE GROUND-TRUTH REPORT 🌱\n"
+    text = text .. "🌱 GROWBLOX COMPREHENSIVE GROUND-TRUTH REPORT (v2.0) 🌱\n"
     text = text .. "PlaceId: " .. tostring(game.PlaceId) .. " | JobId: " .. tostring(game.JobId) .. "\n"
     text = text .. "Player: " .. LocalPlayer.Name .. " (" .. tostring(LocalPlayer.UserId) .. ")\n"
     text = text .. "Captured Live Traffic Count: " .. tostring(#DumpResults.CapturedTraffic) .. "\n"
+    text = text .. "Punch Detected: " .. tostring(PunchDetected) .. " | Place Detected: " .. tostring(PlaceDetected) .. "\n"
     text = text .. "═════════════════════════════════════════════════════════════\n\n"
 
-    text = text .. "--- [1. LIVE INTERCEPTED NETWORK TRAFFIC (PUNCH/PLACE/HARVEST)] ---\n"
+    text = text .. "--- [1. LIVE INTERCEPTED NETWORK TRAFFIC (NET & REMOTES)] ---\n"
     if #DumpResults.CapturedTraffic == 0 then
-        text = text .. "(Belum ada traffic remote yang tertangkap. Silakan pukul atau pasang blok!)\n"
+        text = text .. "(Belum ada traffic remote yang tertangkap.)\n"
     else
         for i, log in ipairs(DumpResults.CapturedTraffic) do
             text = text .. string.format("[%02d] %s | %s\n", i, log.Time, log.Detail)
         end
     end
 
-    text = text .. "\n--- [2. ALL REMOTES IN REPLICATEDSTORAGE] ---\n"
-    if #DumpResults.Remotes == 0 then
-        text = text .. "(Tidak ada RemoteEvent/RemoteFunction di ReplicatedStorage)\n"
-    else
-        for _, r in ipairs(DumpResults.Remotes) do
-            text = text .. string.format("[%s] %s\n      Path: %s\n", r.Type, r.Name, r.Path)
-        end
+    text = text .. "\n--- [2. INTROSPECTED NET PACKETS (BYTENET SCHEMAS)] ---\n"
+    for pName, schema in pairs(DumpResults.NetPackets) do
+        text = text .. string.format("▶ Net.%s Schema:\n%s\n\n", pName, schema)
     end
 
-    text = text .. "\n--- [3. ALL MODULESCRIPTS IN REPLICATEDSTORAGE] ---\n"
-    for _, m in ipairs(DumpResults.Modules) do
-        text = text .. string.format("[Module] %s | Path: %s\n", m.Name, m.Path)
+    if DumpResults.NetSource then
+        text = text .. "\n--- [2.1 DECOMPILED SHARED.NET SOURCE CODE] ---\n"
+        text = text .. DumpResults.NetSource .. "\n"
     end
 
-    if DumpResults.ModuleExports and next(DumpResults.ModuleExports) then
-        text = text .. "\n--- [3.1 INTROSPECTED MODULE EXPORTS & KEYS] ---\n"
-        for modName, keys in pairs(DumpResults.ModuleExports) do
-            text = text .. string.format("▶ Module '%s' (%d keys/exports):\n", modName, #keys)
-            for _, kStr in ipairs(keys) do
-                text = text .. "   - " .. kStr .. "\n"
-            end
-        end
+    text = text .. "\n--- [3. ALL REMOTES IN REPLICATEDSTORAGE] ---\n"
+    for _, r in ipairs(DumpResults.Remotes) do
+        text = text .. string.format("[%s] %s | Path: %s\n", r.Type, r.Name, r.Path)
     end
 
-    text = text .. "\n--- [4. WORKSPACE ROOT DIRECTORIES & OBJECTS] ---\n"
+    text = text .. "\n--- [4. PLAYERSCRIPTS LOCAL AND MODULE SCRIPTS] ---\n"
+    for _, s in ipairs(DumpResults.PlayerScripts) do
+        text = text .. string.format("[%s] %s | Path: %s\n", s.ClassName, s.Name, s.Path)
+    end
+
+    text = text .. "\n--- [5. WORKSPACE ROOT DIRECTORIES & OBJECTS] ---\n"
     for _, w in ipairs(DumpResults.WorkspaceRoots) do
         text = text .. string.format("[Workspace] %s (%s, Total Children: %d)\n", w.Name, w.ClassName, w.ChildCount)
     end
 
-    text = text .. "\n--- [5. BACKPACK TOOLS] ---\n"
-    if #DumpResults.BackpackTools == 0 then
-        text = text .. "(Backpack kosong)\n"
-    else
-        for _, t in ipairs(DumpResults.BackpackTools) do
-            text = text .. string.format("[Tool] %s (%s)\n", t.Name, t.ClassName)
-        end
-    end
-
-    text = text .. "\n--- [6. PLAYERGUI ROOT ELEMENTS] ---\n"
-    for _, g in ipairs(DumpResults.PlayerGuiRoots) do
-        text = text .. string.format("[Gui] %s (%s)\n", g.Name, g.ClassName)
+    text = text .. "\n--- [6. BACKPACK TOOLS & INVENTORY] ---\n"
+    for _, t in ipairs(DumpResults.BackpackTools) do
+        text = text .. string.format("[Tool] %s (%s)\n", t.Name, t.ClassName)
     end
 
     text = text .. "\n═════════════════════════════════════════════════════════════\n"
@@ -199,67 +344,13 @@ local function copyReportToClipboard()
     return copied
 end
 
--- Auto-copy initial recon directly to clipboard on execution
-task.spawn(function()
-    task.wait(0.5)
-    copyReportToClipboard()
-end)
-
 -- ═════════════════════════════════════════════════════════════════════════
--- [3] LIVE NAMECALL SPY HOOK
--- ═════════════════════════════════════════════════════════════════════════
-local OnTrafficCaptured = nil
-
-local rawMeta = getrawmetatable and getrawmetatable(game)
-if rawMeta and setreadonly then
-    setreadonly(rawMeta, false)
-    local oldNamecall = rawMeta.__namecall
-    rawMeta.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
-            if self:IsA("RemoteEvent") or self:IsA("RemoteFunction") then
-                local args = { ... }
-                local strArgs = {}
-                for i, v in ipairs(args) do
-                    local valStr = tostring(v)
-                    if typeof(v) == "table" then
-                        pcall(function() valStr = HttpService:JSONEncode(v) end)
-                    elseif typeof(v) == "Instance" then
-                        valStr = v:GetFullName()
-                    end
-                    table.insert(strArgs, string.format("arg%d(%s)=%s", i, typeof(v), valStr))
-                end
-
-                local detail = string.format("[%s] %s:%s(%s)", method, self:GetFullName(), method, table.concat(strArgs, ", "))
-                table.insert(DumpResults.CapturedTraffic, 1, {
-                    Time = os.date("%X"),
-                    Detail = detail,
-                    Remote = self,
-                })
-
-                -- Limit to 80 recent calls
-                if #DumpResults.CapturedTraffic > 80 then
-                    table.remove(DumpResults.CapturedTraffic)
-                end
-
-                if OnTrafficCaptured then
-                    pcall(OnTrafficCaptured, detail, #DumpResults.CapturedTraffic)
-                end
-            end
-        end
-        return oldNamecall(self, ...)
-    end)
-    setreadonly(rawMeta, true)
-end
-
--- ═════════════════════════════════════════════════════════════════════════
--- [4] SLEEK ON-SCREEN FLOATING CARD (1-CLICK COPY BUTTON)
+-- [5] INTERACTIVE FLOATING CARD WITH LIVE CHECKLIST
 -- ═════════════════════════════════════════════════════════════════════════
 local function createFloatingUI()
     local parent = CoreGui or LocalPlayer:FindFirstChild("PlayerGui")
     if not parent then return end
 
-    -- Destroy old instances
     for _, c in ipairs(parent:GetChildren()) do
         if c.Name == "GrowbloxInspectorUI" then
             pcall(function() c:Destroy() end)
@@ -272,8 +363,8 @@ local function createFloatingUI()
     sg.DisplayOrder = 999999
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 340, 0, 200)
-    frame.Position = UDim2.new(0.5, -170, 0.05, 0)
+    frame.Size = UDim2.new(0, 360, 0, 240)
+    frame.Position = UDim2.new(0.5, -180, 0.04, 0)
     frame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
     frame.BorderSizePixel = 0
     frame.Active = true
@@ -285,38 +376,49 @@ local function createFloatingUI()
     corner.Parent = frame
 
     local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(60, 100, 170)
+    stroke.Color = Color3.fromRGB(70, 130, 220)
     stroke.Thickness = 1.5
     stroke.Parent = frame
 
     -- Title
     local title = Instance.new("TextLabel")
-    title.Text = "🌱 GROWBLOX RECON & LIVE SPY"
+    title.Text = "🌱 GROWBLOX GROUND-TRUTH SPY v2.0"
     title.TextColor3 = Color3.fromRGB(240, 245, 255)
     title.Font = Enum.Font.GothamBold
-    title.TextSize = 14
-    title.Size = UDim2.new(1, -20, 0, 26)
+    title.TextSize = 13
+    title.Size = UDim2.new(1, -20, 0, 24)
     title.Position = UDim2.new(0, 10, 0, 8)
     title.BackgroundTransparency = 1
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Parent = frame
 
-    -- Status Subtitle
-    local sub = Instance.new("TextLabel")
-    sub.Text = string.format("Found: %d Remotes | %d Modules", #DumpResults.Remotes, #DumpResults.Modules)
-    sub.TextColor3 = Color3.fromRGB(140, 170, 215)
-    sub.Font = Enum.Font.Gotham
-    sub.TextSize = 12
-    sub.Size = UDim2.new(1, -20, 0, 18)
-    sub.Position = UDim2.new(0, 10, 0, 34)
-    sub.BackgroundTransparency = 1
-    sub.TextXAlignment = Enum.TextXAlignment.Left
-    sub.Parent = frame
+    -- Status Checklist
+    local punchLabel = Instance.new("TextLabel")
+    punchLabel.Text = "🥊 Pukul (Punch) Blok: [ BELUM ]"
+    punchLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+    punchLabel.Font = Enum.Font.GothamBold
+    punchLabel.TextSize = 11
+    punchLabel.Size = UDim2.new(1, -20, 0, 18)
+    punchLabel.Position = UDim2.new(0, 10, 0, 32)
+    punchLabel.BackgroundTransparency = 1
+    punchLabel.TextXAlignment = Enum.TextXAlignment.Left
+    punchLabel.Parent = frame
 
-    -- Live Traffic Counter & Preview
+    local placeLabel = Instance.new("TextLabel")
+    placeLabel.Text = "🧱 Pasang (Place) Blok/Bibit: [ BELUM ]"
+    placeLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+    placeLabel.Font = Enum.Font.GothamBold
+    placeLabel.TextSize = 11
+    placeLabel.Size = UDim2.new(1, -20, 0, 18)
+    placeLabel.Position = UDim2.new(0, 10, 0, 52)
+    placeLabel.BackgroundTransparency = 1
+    placeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    placeLabel.Parent = frame
+
+    -- Live Traffic Log
     local liveBox = Instance.new("Frame")
-    liveBox.Size = UDim2.new(1, -20, 0, 48)
-    liveBox.Position = UDim2.new(0, 10, 0, 56)
+    liveBox.Size = UDim2.new(1, -20, 0, 50)
+    liveBox.Position = UDim2.new(0, 10, 0, 74)
     liveBox.BackgroundColor3 = Color3.fromRGB(22, 30, 48)
     liveBox.BorderSizePixel = 0
     liveBox.Parent = frame
@@ -326,10 +428,10 @@ local function createFloatingUI()
     liveBoxCorner.Parent = liveBox
 
     local liveLabel = Instance.new("TextLabel")
-    liveLabel.Text = "⚡ Traffic: 0 calls\n(Pukul / pasang blok buat nangkep remote)"
+    liveLabel.Text = "⚡ Traffic: 0 calls\n(Coba pukul 1 tanah & pasang 1 blok di world!)"
     liveLabel.TextColor3 = Color3.fromRGB(180, 210, 255)
     liveLabel.Font = Enum.Font.Code
-    liveLabel.TextSize = 11
+    liveLabel.TextSize = 10
     liveLabel.Size = UDim2.new(1, -12, 1, 0)
     liveLabel.Position = UDim2.new(0, 6, 0, 0)
     liveLabel.BackgroundTransparency = 1
@@ -338,20 +440,15 @@ local function createFloatingUI()
     liveLabel.TextWrapped = true
     liveLabel.Parent = liveBox
 
-    -- Update hook for live label
-    OnTrafficCaptured = function(detail, count)
-        liveLabel.Text = string.format("⚡ Traffic: %d calls | Last:\n%s", count, detail:sub(1, 65))
-    end
-
-    -- Big Copy Button
+    -- Copy Button
     local copyBtn = Instance.new("TextButton")
-    copyBtn.Size = UDim2.new(1, -20, 0, 42)
-    copyBtn.Position = UDim2.new(0, 10, 0, 112)
+    copyBtn.Size = UDim2.new(1, -20, 0, 40)
+    copyBtn.Position = UDim2.new(0, 10, 0, 132)
     copyBtn.BackgroundColor3 = Color3.fromRGB(50, 120, 240)
-    copyBtn.Text = "📋 COPY SEMUA DATA KE CLIPBOARD"
+    copyBtn.Text = "📋 COPY SEMUA HASIL RECON (SIAP PASTE)"
     copyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     copyBtn.Font = Enum.Font.GothamBold
-    copyBtn.TextSize = 12
+    copyBtn.TextSize = 11
     copyBtn.BorderSizePixel = 0
     copyBtn.Parent = frame
 
@@ -359,24 +456,43 @@ local function createFloatingUI()
     btnCorner.CornerRadius = UDim.new(0, 8)
     btnCorner.Parent = copyBtn
 
-    -- Footer notice
-    local notice = Instance.new("TextLabel")
-    notice.Text = "✓ Auto-copied to clipboard on load! Geser card ini kalo ngehalangin."
-    notice.TextColor3 = Color3.fromRGB(100, 220, 160)
-    notice.Font = Enum.Font.Gotham
-    notice.TextSize = 10
-    notice.Size = UDim2.new(1, -20, 0, 20)
-    notice.Position = UDim2.new(0, 10, 0, 160)
-    notice.BackgroundTransparency = 1
-    notice.Parent = frame
+    -- Instructions
+    local instr = Instance.new("TextLabel")
+    instr.Text = "Urutan: Masuk world -> Pukul 1x -> Pasang 1x -> Klik Copy!"
+    instr.TextColor3 = Color3.fromRGB(130, 200, 255)
+    instr.Font = Enum.Font.Gotham
+    instr.TextSize = 10
+    instr.Size = UDim2.new(1, -20, 0, 20)
+    instr.Position = UDim2.new(0, 10, 0, 178)
+    instr.BackgroundTransparency = 1
+    instr.Parent = frame
+
+    local function updateLabels(detail)
+        if PunchDetected then
+            punchLabel.Text = "🥊 Pukul (Punch) Blok: [ ✔ TERDETEKSI! ]"
+            punchLabel.TextColor3 = Color3.fromRGB(100, 240, 150)
+        end
+        if PlaceDetected then
+            placeLabel.Text = "🧱 Pasang (Place) Blok/Bibit: [ ✔ TERDETEKSI! ]"
+            placeLabel.TextColor3 = Color3.fromRGB(100, 240, 150)
+        end
+        liveLabel.Text = string.format("⚡ Traffic: %d calls | Last:\n%s", #DumpResults.CapturedTraffic, detail:sub(1, 65))
+        if PunchDetected or PlaceDetected then
+            copyBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 90)
+        end
+    end
+
+    OnTrafficCaptured = function(detail)
+        pcall(updateLabels, detail)
+    end
 
     copyBtn.MouseButton1Click:Connect(function()
         copyReportToClipboard()
-        copyBtn.Text = "✅ BERHASIL DICOPY! (Siap Paste)"
-        copyBtn.BackgroundColor3 = Color3.fromRGB(35, 170, 95)
+        copyBtn.Text = "✅ BERHASIL DICOPY KE CLIPBOARD!"
+        copyBtn.BackgroundColor3 = Color3.fromRGB(30, 180, 100)
         task.wait(2)
-        copyBtn.Text = "📋 COPY SEMUA DATA KE CLIPBOARD"
-        copyBtn.BackgroundColor3 = Color3.fromRGB(50, 120, 240)
+        copyBtn.Text = "📋 COPY SEMUA HASIL RECON (SIAP PASTE)"
+        copyBtn.BackgroundColor3 = (PunchDetected or PlaceDetected) and Color3.fromRGB(40, 160, 90) or Color3.fromRGB(50, 120, 240)
     end)
 
     pcall(function() sg.Parent = parent end)
