@@ -43,6 +43,7 @@ local DumpResults = {
     BackpackTools = {},
     PlayerGuiRoots = {},
     CapturedTraffic = {},
+    ModuleExports = {},
 }
 
 local function runStaticScan()
@@ -51,6 +52,7 @@ local function runStaticScan()
     DumpResults.WorkspaceRoots = {}
     DumpResults.BackpackTools = {}
     DumpResults.PlayerGuiRoots = {}
+    DumpResults.ModuleExports = {}
 
     -- Scan ReplicatedStorage
     for _, desc in ipairs(RS:GetDescendants()) do
@@ -60,6 +62,30 @@ local function runStaticScan()
             table.insert(DumpResults.Remotes, { Type = "RemoteFunction", Name = desc.Name, Path = desc:GetFullName() })
         elseif desc:IsA("ModuleScript") then
             table.insert(DumpResults.Modules, { Name = desc.Name, Path = desc:GetFullName() })
+        end
+    end
+
+    -- Introspect Key Shared Modules (Net, ItemDB, WorldCodec, BlocksDB)
+    local sharedFolder = RS:FindFirstChild("Shared")
+    if sharedFolder then
+        local targetModules = { "Net", "ItemDB", "WorldCodec", "BlocksDB", "Inventory", "DropBox", "CommandList" }
+        for _, modName in ipairs(targetModules) do
+            local mod = sharedFolder:FindFirstChild(modName)
+            if mod and mod:IsA("ModuleScript") then
+                local s, res = pcall(require, mod)
+                if s and type(res) == "table" then
+                    local keys = {}
+                    for k, v in pairs(res) do
+                        local valPreview = tostring(v)
+                        if typeof(v) == "table" then
+                            valPreview = "{... " .. tostring(#v) .. " items}"
+                        end
+                        table.insert(keys, string.format("%s (%s = %s)", tostring(k), typeof(v), valPreview:sub(1, 40)))
+                    end
+                    table.sort(keys)
+                    DumpResults.ModuleExports[modName] = keys
+                end
+            end
         end
     end
 
@@ -123,6 +149,16 @@ local function buildFullReport()
     text = text .. "\n--- [3. ALL MODULESCRIPTS IN REPLICATEDSTORAGE] ---\n"
     for _, m in ipairs(DumpResults.Modules) do
         text = text .. string.format("[Module] %s | Path: %s\n", m.Name, m.Path)
+    end
+
+    if DumpResults.ModuleExports and next(DumpResults.ModuleExports) then
+        text = text .. "\n--- [3.1 INTROSPECTED MODULE EXPORTS & KEYS] ---\n"
+        for modName, keys in pairs(DumpResults.ModuleExports) do
+            text = text .. string.format("▶ Module '%s' (%d keys/exports):\n", modName, #keys)
+            for _, kStr in ipairs(keys) do
+                text = text .. "   - " .. kStr .. "\n"
+            end
+        end
     end
 
     text = text .. "\n--- [4. WORKSPACE ROOT DIRECTORIES & OBJECTS] ---\n"
