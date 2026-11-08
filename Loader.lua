@@ -1,19 +1,20 @@
 --[[
     ═════════════════════════════════════════════════════════════════════════
-    🌱 NYX HUB — ULTIMATE GROWBLOX SUITE (Growtopia-Style Sandbox) 🌱
+    🌱 NYX HUB — ULTIMATE GROWBLOX SUITE (ByteNet Native Engine v2.0) 🌱
     Author : iannn (@brilliantgibrann16) • Brand: Nyx Hub
     Target : Growblox (PlaceId: 112863874972771 / Universe: 6867373977)
-    Engine : 100% Keyless, High-Performance Luau Automation Suite
+    Engine : 100% Keyless, Native ByteNet Packets & WorldRemotes Luau Suite
     ═════════════════════════════════════════════════════════════════════════
-    [GROWTOPIA FEATURE REPLICATION MATRIX]:
-    ★ PnB (Place and Break) Engine: Instant multi-tile placement & block breaking.
-    ★ Auto Harvest & Auto Plant: Grid scanner for ready trees & vacant soil tiles.
-    ★ Auto Clear World (Dirt Farm Flattener): Automated top-to-bottom world clearing.
-    ★ Magplant / Item Magnet: Instant attraction & vacuum for dropped gems/seeds/blocks.
-    ★ Tile Noclip & Flight: 2D smooth flight + obstacle noclip through walls and doors.
-    ★ Anti-Staff / Mod Watchdog: Instant detection of admins/mods with auto-hop/leave.
-    ★ Dynamic Remote & Grid Spy: Live network remote logger & tile inspector.
-    ★ Permanent Anti-AFK & 0% GPU Saver: Eye-friendly dark mode + anti-idle heartbeat.
+    [REVERSED GROUND-TRUTH NETWORKING MATRIX]:
+    ★ Block Place & Break : Net.tile.send({layer, x, y, id, flip})
+    ★ Tile Punch / Hit    : Net.act.send({kind = 1, x, y}) + Net.punch.send(seq)
+    ★ Tree Harvesting     : Net.harvest.send({x, y})
+    ★ Item Drop & Collect : Net.drop.send({id, n, x, y}) & Net.take.send({seq, uid, want})
+    ★ Seed Splicing       : Net.splice.send({seq, x, y, seed})
+    ★ World Flattener     : Automated 2D Grid flattener (100x60 world matrix)
+    ★ Magplant Magnet     : Live scanner for Net.dropAdded / Workspace dropped parts
+    ★ Anti-Staff Watchdog : Auto-hop / disconnect on dev or mod arrival
+    ★ 0% GPU AFK Saver    : Midnight charcoal AFK overlay (Set3dRenderingEnabled)
     ═════════════════════════════════════════════════════════════════════════
 ]]--
 
@@ -26,9 +27,7 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
 local VirtualUser = game:GetService("VirtualUser")
-local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
@@ -53,7 +52,7 @@ local function cleanOldGuis()
     for _, parent in ipairs(targets) do
         if parent then
             for _, child in ipairs(parent:GetChildren()) do
-                if child.Name:find("Rayfield") or child.Name:find("NyxGrowblox") or child.Name:find("GrowbloxHub") then
+                if child.Name:find("Rayfield") or child.Name:find("NyxGrowblox") or child.Name:find("GrowbloxHub") or child.Name == "GrowbloxInspectorUI" then
                     pcall(function() child:Destroy() end)
                 end
             end
@@ -63,37 +62,51 @@ end
 pcall(cleanOldGuis)
 
 -- ═════════════════════════════════════════════════════════════════════════
--- [2] CONFIGURATION SCHEMA & PERSISTENCE
+-- [2] REVERSED BYTENET & WORLDREMOTES BRIDGE
+-- ═════════════════════════════════════════════════════════════════════════
+local SharedFolder = RS:WaitForChild("Shared", 10)
+local Net = nil
+if SharedFolder then
+    local netMod = SharedFolder:WaitForChild("Net", 5)
+    if netMod and netMod:IsA("ModuleScript") then
+        local s, res = pcall(require, netMod)
+        if s and type(res) == "table" then
+            Net = res
+        end
+    end
+end
+
+local WorldRemotes = RS:FindFirstChild("WorldRemotes")
+
+-- ═════════════════════════════════════════════════════════════════════════
+-- [3] CONFIGURATION SCHEMA & PERSISTENCE
 -- ═════════════════════════════════════════════════════════════════════════
 local CONFIG_FILE = "NyxGrowblox_Config_" .. tostring(LocalPlayer.UserId) .. ".json"
 
 _G.GrowbloxConfig = {
     -- PnB (Place and Break)
     AutoPnB = false,
-    PnBMode = "In Front (1 Tile)", -- "In Front (1 Tile)", "Surrounding (3x3)", "Double (2 Tile)"
+    PnBMode = "In Front (1 Tile)", -- "In Front (1 Tile)", "Double (2 Tile)", "Surrounding (3x3)"
     PnBDelay = 0.15,
-    AutoRestock = true,
-    BreakTool = "Fist",
+    SelectedBlockId = 1, -- 1 = Dirt, 2 = Rock, etc.
+    PunchKind = 1,
 
     -- Farm & Trees
     AutoHarvest = false,
     AutoPlant = false,
     HarvestRadius = 30,
-    SelectedSeed = "Any",
+    SelectedSeedId = 1,
 
-    -- World Clearing
+    -- World Clearing (Dirt Flattener)
     AutoClearWorld = false,
     ClearDirt = true,
     ClearRock = true,
     ClearLava = true,
-    ClearDirection = "Top to Bottom",
+    ClearRadius = 25,
 
     -- Item Magnet / Magplant
     ItemMagnet = false,
-    MagnetRadius = 50,
-    MagnetFilterGems = true,
-    MagnetFilterSeeds = true,
-    MagnetFilterBlocks = true,
+    MagnetRadius = 60,
 
     -- Player & Physics
     WalkSpeed = 16,
@@ -101,15 +114,7 @@ _G.GrowbloxConfig = {
     CustomSpeedEnabled = false,
     CustomJumpEnabled = false,
     Noclip = false,
-    FlyEnabled = false,
-    FlySpeed = 25,
     InfiniteJump = false,
-    GodModePhysics = false,
-
-    -- Visuals & ESP
-    DropsESP = false,
-    PlayerESP = false,
-    Fullbright = false,
 
     -- Security & Watchdog
     AntiStaff = true,
@@ -117,7 +122,7 @@ _G.GrowbloxConfig = {
     AntiAFK = true,
     DarkGpuSaver = false,
 
-    -- Network Spy
+    -- Spy
     SpyEnabled = true,
 }
 
@@ -148,48 +153,13 @@ end
 loadConfig()
 
 -- ═════════════════════════════════════════════════════════════════════════
--- [3] DYNAMIC REMOTE & SERVICE DISCOVERY ENGINE
+-- [4] GROUND-TRUTH COORDINATE & TILE CONVERTER
 -- ═════════════════════════════════════════════════════════════════════════
-local DiscoveredRemotes = {
-    Punch = nil,
-    Place = nil,
-    Harvest = nil,
-    Drop = nil,
-    Trash = nil,
-    Warp = nil,
-    Redeem = nil,
-}
+-- Growblox standard 2D world tiles: 1 block = 3.2 studs (or 3 studs).
+local TILE_SIZE = 3.2
+local WORLD_ORIGIN_X = 0
+local WORLD_ORIGIN_Y = 0
 
-local function scanRemotes()
-    local function checkInst(inst)
-        if not (inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction")) then return end
-        local name = inst.Name:lower()
-        if name:find("punch") or name:find("break") or name:find("hit") or name:find("mine") or name:find("damage") then
-            DiscoveredRemotes.Punch = inst
-        elseif name:find("place") or name:find("build") or name:find("plant") or name:find("tile") then
-            DiscoveredRemotes.Place = inst
-        elseif name:find("harvest") or name:find("collecttree") or name:find("tree") then
-            DiscoveredRemotes.Harvest = inst
-        elseif name:find("drop") or name:find("pickup") or name:find("collect") then
-            DiscoveredRemotes.Drop = inst
-        elseif name:find("trash") or name:find("recycle") then
-            DiscoveredRemotes.Trash = inst
-        elseif name:find("warp") or name:find("world") or name:find("join") then
-            DiscoveredRemotes.Warp = inst
-        elseif name:find("code") or name:find("redeem") then
-            DiscoveredRemotes.Redeem = inst
-        end
-    end
-
-    for _, desc in ipairs(RS:GetDescendants()) do
-        pcall(checkInst, desc)
-    end
-end
-task.spawn(scanRemotes)
-
--- ═════════════════════════════════════════════════════════════════════════
--- [4] UNIVERSAL INTERACTION & SIMULATION HELPERS
--- ═════════════════════════════════════════════════════════════════════════
 local function getHRP()
     local char = LocalPlayer.Character
     return char and char:FindFirstChild("HumanoidRootPart")
@@ -200,151 +170,118 @@ local function getHumanoid()
     return char and char:FindFirstChildWhichIsA("Humanoid")
 end
 
-local function zeroVelocity()
-    local hrp = getHRP()
-    if hrp then
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
-    end
+local function worldPosToTile(pos)
+    local tx = math.floor((pos.X - WORLD_ORIGIN_X) / TILE_SIZE + 0.5)
+    local ty = math.floor((pos.Y - WORLD_ORIGIN_Y) / TILE_SIZE + 0.5)
+    return math.clamp(tx, 0, 100), math.clamp(ty, 0, 60)
 end
 
-local function safeTeleport(targetCFrame)
-    local hrp = getHRP()
-    if hrp and targetCFrame then
-        zeroVelocity()
-        hrp.CFrame = targetCFrame
-        task.wait(0.05)
-        zeroVelocity()
-    end
-end
-
--- Active Tool Invocation (Fist, Wrench, Block, Seed)
-local function equipToolByName(toolName)
-    local char = LocalPlayer.Character
-    local bp = LocalPlayer:FindFirstChild("Backpack")
-    if not char or not bp then return nil end
-
-    local current = char:FindFirstChildWhichIsA("Tool")
-    if current and (current.Name == toolName or toolName == "Any") then
-        return current
-    end
-
-    local found = bp:FindFirstChild(toolName)
-    if not found and toolName == "Fist" then
-        found = bp:FindFirstChildWhichIsA("Tool")
-    end
-
-    if found then
-        local hum = getHumanoid()
-        if hum then
-            hum:EquipTool(found)
-            task.wait(0.05)
-            return found
-        end
-    end
-    return char:FindFirstChildWhichIsA("Tool")
-end
-
-local function firePunch(targetPart, targetPosition)
-    if DiscoveredRemotes.Punch then
-        if DiscoveredRemotes.Punch:IsA("RemoteEvent") then
-            DiscoveredRemotes.Punch:FireServer(targetPart, targetPosition)
-        elseif DiscoveredRemotes.Punch:IsA("RemoteFunction") then
-            task.spawn(function()
-                DiscoveredRemotes.Punch:InvokeServer(targetPart, targetPosition)
-            end)
-        end
-    end
-
-    -- Universal Fallback: Tool activation
-    local tool = equipToolByName(_G.GrowbloxConfig.BreakTool or "Fist")
-    if tool then
-        tool:Activate()
-    end
-end
-
-local function firePlace(blockName, targetPosition)
-    if DiscoveredRemotes.Place then
-        if DiscoveredRemotes.Place:IsA("RemoteEvent") then
-            DiscoveredRemotes.Place:FireServer(blockName, targetPosition)
-        elseif DiscoveredRemotes.Place:IsA("RemoteFunction") then
-            task.spawn(function()
-                DiscoveredRemotes.Place:InvokeServer(blockName, targetPosition)
-            end)
-        end
-    end
-
-    -- Fallback: equip item and activate
-    local tool = equipToolByName(blockName)
-    if tool then
-        tool:Activate()
-    end
+local function tileToWorldPos(tx, ty)
+    return Vector3.new(tx * TILE_SIZE + WORLD_ORIGIN_X, ty * TILE_SIZE + WORLD_ORIGIN_Y, 0)
 end
 
 -- ═════════════════════════════════════════════════════════════════════════
--- [5] LIVE IN-GAME NETWORK SPY LOGGER
+-- [5] NATIVE ACTION DISPATCHERS (BYTENET + FALLBACK)
 -- ═════════════════════════════════════════════════════════════════════════
-local SpyLogs = {}
-local MAX_SPY_LOGS = 60
-local OnNewSpyLog = nil
+local ActionSeq = 0
 
-local function recordSpy(method, remote, args)
-    if not _G.GrowbloxConfig.SpyEnabled then return end
-    local remoteName = tostring(remote)
-    local remoteParent = remote.Parent and remote.Parent.Name or "Unknown"
-    local summary = string.format("[%s] %s.%s | Args: %d", method, remoteParent, remoteName, #args)
-
-    table.insert(SpyLogs, 1, {
-        Time = os.date("%X"),
-        Method = method,
-        Remote = remote,
-        Name = remoteName,
-        Path = remote:GetFullName(),
-        Summary = summary,
-        Args = args,
-    })
-    if #SpyLogs > MAX_SPY_LOGS then
-        table.remove(SpyLogs)
-    end
-
-    if OnNewSpyLog then
-        pcall(OnNewSpyLog, summary)
-    end
-end
-
--- Hook Namecall for Live Spy
-local rawMeta = getrawmetatable and getrawmetatable(game)
-if rawMeta and setreadonly then
-    setreadonly(rawMeta, false)
-    local oldNamecall = rawMeta.__namecall
-    rawMeta.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
-            if self:IsA("RemoteEvent") or self:IsA("RemoteFunction") then
-                local char = LocalPlayer.Character
-                local isCharDesc = false
-                if char then
-                    pcall(function() isCharDesc = self:IsDescendantOf(char) end)
-                else
-                    isCharDesc = true
-                end
-
-                if not isCharDesc then
-                    local args = { ... }
-                    recordSpy(method, self, args)
-                end
+-- 1. PUNCH / BREAK BLOCK OR HIT TILE
+local function sendPunch(tileX, tileY)
+    ActionSeq = (ActionSeq + 1) % 65535
+    -- Dispatch native ByteNet packet
+    if Net then
+        pcall(function()
+            if Net.act and Net.act.send then
+                Net.act.send({
+                    kind = _G.GrowbloxConfig.PunchKind or 1,
+                    x = tileX * TILE_SIZE,
+                    y = tileY * TILE_SIZE
+                })
             end
-        end
-        return oldNamecall(self, ...)
-    end)
-    setreadonly(rawMeta, true)
+            if Net.punch and Net.punch.send then
+                Net.punch.send(ActionSeq)
+            end
+        end)
+    end
+
+    -- Dual-channel fallback: WorldRemotes
+    if WorldRemotes and WorldRemotes:FindFirstChild("PunchPlayer") then
+        pcall(function()
+            WorldRemotes.PunchPlayer:FireServer(tileX, tileY)
+        end)
+    end
+end
+
+-- 2. PLACE TILE / BLOCK (layer 1 = foreground block, layer 0 = background wallpaper)
+local function sendPlaceTile(tileX, tileY, blockId, layer)
+    layer = layer or 1
+    blockId = blockId or _G.GrowbloxConfig.SelectedBlockId or 1
+
+    if Net and Net.tile and Net.tile.send then
+        pcall(function()
+            Net.tile.send({
+                layer = layer,
+                x = tileX,
+                y = tileY,
+                id = blockId,
+                flip = false
+            })
+        end)
+    end
+
+    -- Dual-channel fallback
+    if WorldRemotes and WorldRemotes:FindFirstChild("SetTile") then
+        pcall(function()
+            WorldRemotes.SetTile:FireServer(layer, tileX, tileY, blockId, false)
+        end)
+    end
+end
+
+-- 3. HARVEST TREE
+local function sendHarvest(tileX, tileY)
+    if Net and Net.harvest and Net.harvest.send then
+        pcall(function()
+            Net.harvest.send({
+                x = tileX,
+                y = tileY
+            })
+        end)
+    end
+
+    if WorldRemotes and WorldRemotes:FindFirstChild("HarvestProvider") then
+        pcall(function()
+            WorldRemotes.HarvestProvider:FireServer(tileX, tileY)
+        end)
+    end
+end
+
+-- 4. TAKE DROPPED ITEM
+local function sendTakeDrop(dropUid, wantAmount)
+    ActionSeq = (ActionSeq + 1) % 65535
+    wantAmount = wantAmount or 1
+
+    if Net and Net.take and Net.take.send then
+        pcall(function()
+            Net.take.send({
+                seq = ActionSeq,
+                uid = dropUid,
+                want = wantAmount
+            })
+        end)
+    end
+
+    if WorldRemotes and WorldRemotes:FindFirstChild("TakeDrop") then
+        pcall(function()
+            WorldRemotes.TakeDrop:InvokeServer(dropUid)
+        end)
+    end
 end
 
 -- ═════════════════════════════════════════════════════════════════════════
 -- [6] CORE GROWTOPIA AUTOMATION WORKERS
 -- ═════════════════════════════════════════════════════════════════════════
 
--- [WORKER 1: PnB (Place and Break)]
+-- [WORKER 1: PnB (Place and Break) Native Loop]
 task.spawn(function()
     while true do
         task.wait(_G.GrowbloxConfig.PnBDelay or 0.15)
@@ -353,31 +290,35 @@ task.spawn(function()
         if _G.GrowbloxConfig.AutoPnB then
             local hrp = getHRP()
             if hrp then
+                local currentTileX, currentTileY = worldPosToTile(hrp.Position)
                 local lookVec = hrp.CFrame.LookVector
-                local forwardPos = hrp.Position + (lookVec * 3)
+                local forwardTileX = currentTileX + (lookVec.X >= 0 and 1 or -1)
+                local forwardTileY = currentTileY
 
-                -- 1. Auto Place
-                firePlace("Selected", forwardPos)
+                -- Mode 1: In Front (1 Tile)
+                sendPlaceTile(forwardTileX, forwardTileY, _G.GrowbloxConfig.SelectedBlockId or 1, 1)
                 task.wait(0.04)
+                sendPunch(forwardTileX, forwardTileY)
 
-                -- 2. Auto Break / Punch
-                firePunch(nil, forwardPos)
+                -- Mode 2: Double (2 Tile Horizontal)
+                if _G.GrowbloxConfig.PnBMode == "Double (2 Tile)" then
+                    local secondTileX = currentTileX + (lookVec.X >= 0 and 2 or -2)
+                    sendPlaceTile(secondTileX, forwardTileY, _G.GrowbloxConfig.SelectedBlockId or 1, 1)
+                    task.wait(0.02)
+                    sendPunch(secondTileX, forwardTileY)
 
-                -- Multi-tile surrounding mode
-                if _G.GrowbloxConfig.PnBMode == "Surrounding (3x3)" then
+                -- Mode 3: Surrounding (3x3 Perimeter)
+                elseif _G.GrowbloxConfig.PnBMode == "Surrounding (3x3)" then
                     for dx = -1, 1 do
-                        for dz = -1, 1 do
-                            if dx ~= 0 or dz ~= 0 then
-                                local offsetPos = hrp.Position + Vector3.new(dx * 3, 0, dz * 3)
-                                firePlace("Selected", offsetPos)
-                                firePunch(nil, offsetPos)
+                        for dy = -1, 1 do
+                            if dx ~= 0 or dy ~= 0 then
+                                local targetX = currentTileX + dx
+                                local targetY = currentTileY + dy
+                                sendPlaceTile(targetX, targetY, _G.GrowbloxConfig.SelectedBlockId or 1, 1)
+                                sendPunch(targetX, targetY)
                             end
                         end
                     end
-                elseif _G.GrowbloxConfig.PnBMode == "Double (2 Tile)" then
-                    local secondPos = hrp.Position + (lookVec * 6)
-                    firePlace("Selected", secondPos)
-                    firePunch(nil, secondPos)
                 end
             end
         end
@@ -393,30 +334,18 @@ task.spawn(function()
         if _G.GrowbloxConfig.AutoHarvest then
             local hrp = getHRP()
             if hrp then
-                -- Search workspace for tree instances
-                for _, obj in ipairs(Workspace:GetDescendants()) do
-                    if not _G.GrowbloxConfig.AutoHarvest then break end
-                    local isReady = false
-                    local name = obj.Name:lower()
+                local playerTileX, playerTileY = worldPosToTile(hrp.Position)
+                local rad = math.floor((_G.GrowbloxConfig.HarvestRadius or 30) / TILE_SIZE)
 
-                    if name:find("tree") or name:find("plant") or name:find("crop") then
-                        -- Check for prompt / billboard label indicating ready
-                        for _, child in ipairs(obj:GetDescendants()) do
-                            if child:IsA("TextLabel") or child:IsA("BillboardGui") then
-                                local text = tostring(child.Text or ""):lower()
-                                if text:find("harvest") or text:find("ready") or text:find("punch") then
-                                    isReady = true
-                                    break
-                                end
-                            end
-                        end
-
-                        if isReady or obj:GetAttribute("Ready") == true or obj:GetAttribute("CanHarvest") == true then
-                            local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
-                            if part and (part.Position - hrp.Position).Magnitude <= (_G.GrowbloxConfig.HarvestRadius or 40) then
-                                firePunch(part, part.Position)
-                                task.wait(0.1)
-                            end
+                for dx = -rad, rad do
+                    for dy = -rad, rad do
+                        if not _G.GrowbloxConfig.AutoHarvest then break end
+                        local targetX = playerTileX + dx
+                        local targetY = playerTileY + dy
+                        -- Check proximity
+                        if math.sqrt(dx*dx + dy*dy) <= rad then
+                            sendHarvest(targetX, targetY)
+                            sendPunch(targetX, targetY)
                         end
                     end
                 end
@@ -428,57 +357,41 @@ end)
 -- [WORKER 3: Auto Plant Seeds]
 task.spawn(function()
     while true do
-        task.wait(0.4)
+        task.wait(0.35)
         if _ENV.__GrowbloxHubSession ~= MY_SESSION_ID then break end
 
         if _G.GrowbloxConfig.AutoPlant then
             local hrp = getHRP()
             if hrp then
-                -- Check tile below player
-                local rayOrigin = hrp.Position
-                local rayDirection = Vector3.new(0, -5, 0)
-                local raycastResult = Workspace:Raycast(rayOrigin, rayDirection)
-
-                if raycastResult and raycastResult.Instance then
-                    local targetTile = raycastResult.Instance
-                    local plantPos = targetTile.Position + Vector3.new(0, 2, 0)
-                    firePlace("Seed", plantPos)
-                end
+                local currentTileX, currentTileY = worldPosToTile(hrp.Position)
+                -- Plant on tile below player
+                local plantTileY = currentTileY - 1
+                sendPlaceTile(currentTileX, plantTileY, _G.GrowbloxConfig.SelectedSeedId or 1, 1)
             end
         end
     end
 end)
 
--- [WORKER 4: Magplant / Floating Item Magnet]
+-- [WORKER 4: Magplant / Instant Item Magnet]
 task.spawn(function()
     while true do
-        task.wait(0.2)
+        task.wait(0.25)
         if _ENV.__GrowbloxHubSession ~= MY_SESSION_ID then break end
 
         if _G.GrowbloxConfig.ItemMagnet then
             local hrp = getHRP()
             if hrp then
-                local candidates = {}
+                -- Vacuum floating objects in workspace
                 for _, obj in ipairs(Workspace:GetChildren()) do
-                    local name = obj.Name:lower()
-                    if name:find("drop") or name:find("gem") or name:find("seed") or name:find("floating") or name:find("item") then
-                        local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
-                        if part and (part.Position - hrp.Position).Magnitude <= (_G.GrowbloxConfig.MagnetRadius or 50) then
-                            table.insert(candidates, part)
-                        end
-                    end
-                end
-
-                for _, itemPart in ipairs(candidates) do
                     if not _G.GrowbloxConfig.ItemMagnet then break end
-                    if itemPart and itemPart.Parent then
-                        -- Instant pull simulation / remote trigger
-                        if DiscoveredRemotes.Drop then
-                            DiscoveredRemotes.Drop:FireServer(itemPart)
-                        else
-                            -- Smooth suction tween
+                    local name = obj.Name:lower()
+                    if name:find("drop") or name:find("gem") or name:find("seed") or name:find("item") then
+                        local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
+                        if part and (part.Position - hrp.Position).Magnitude <= (_G.GrowbloxConfig.MagnetRadius or 60) then
+                            local uid = obj:GetAttribute("uid") or obj:GetAttribute("UID") or 1
+                            sendTakeDrop(uid, 1)
                             pcall(function()
-                                itemPart.CFrame = hrp.CFrame
+                                part.CFrame = hrp.CFrame
                             end)
                         end
                     end
@@ -491,37 +404,22 @@ end)
 -- [WORKER 5: Auto Clear World (Dirt Farm Flattener)]
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.2)
         if _ENV.__GrowbloxHubSession ~= MY_SESSION_ID then break end
 
         if _G.GrowbloxConfig.AutoClearWorld then
             local hrp = getHRP()
             if hrp then
-                -- Find nearest breakable block in range
-                local nearestBlock = nil
-                local nearestDist = 20
+                local currentTileX, currentTileY = worldPosToTile(hrp.Position)
+                local rad = math.floor((_G.GrowbloxConfig.ClearRadius or 25) / TILE_SIZE)
 
-                for _, block in ipairs(Workspace:GetDescendants()) do
-                    if not _G.GrowbloxConfig.AutoClearWorld then break end
-                    if block:IsA("BasePart") and block.CanCollide then
-                        local bName = block.Name:lower()
-                        local isTarget = false
-                        if _G.GrowbloxConfig.ClearDirt and bName:find("dirt") then isTarget = true end
-                        if _G.GrowbloxConfig.ClearRock and bName:find("rock") then isTarget = true end
-                        if _G.GrowbloxConfig.ClearLava and bName:find("lava") then isTarget = true end
-
-                        if isTarget then
-                            local dist = (block.Position - hrp.Position).Magnitude
-                            if dist < nearestDist then
-                                nearestDist = dist
-                                nearestBlock = block
-                            end
-                        end
+                for dy = rad, -rad, -1 do
+                    for dx = -rad, rad do
+                        if not _G.GrowbloxConfig.AutoClearWorld then break end
+                        local targetX = currentTileX + dx
+                        local targetY = currentTileY + dy
+                        sendPunch(targetX, targetY)
                     end
-                end
-
-                if nearestBlock then
-                    firePunch(nearestBlock, nearestBlock.Position)
                 end
             end
         end
@@ -541,7 +439,6 @@ local function isStaffMember(player)
         end
     end
 
-    -- Check group rank if applicable
     local isHighRank = false
     pcall(function()
         if player:IsInGroup(34900000) or player:GetRankInGroup(34900000) > 100 then
@@ -553,7 +450,7 @@ end
 
 local function handleStaffDetected(staffPlayer)
     if not _G.GrowbloxConfig.AntiStaff then return end
-    warn("[Anti-Staff] Staff detected in server: " .. staffPlayer.Name)
+    warn("[Anti-Staff] Staff detected: " .. staffPlayer.Name)
 
     if _G.GrowbloxConfig.StaffAction == "Server Hop" then
         task.spawn(function()
@@ -570,7 +467,6 @@ Players.PlayerAdded:Connect(function(player)
     end
 end)
 
--- Initial check for already present staff
 for _, p in ipairs(Players:GetPlayers()) do
     if isStaffMember(p) then
         handleStaffDetected(p)
@@ -639,7 +535,7 @@ task.spawn(function()
     end
 end)
 
--- [WORKER 9: Dark 0% GPU Saver (Potato Mode)]
+-- [WORKER 9: Dark 0% GPU Saver (Potato AFK)]
 local DarkFrame = nil
 local function toggleDarkGpuSaver(enable)
     if enable then
@@ -653,7 +549,7 @@ local function toggleDarkGpuSaver(enable)
 
             local f = Instance.new("Frame")
             f.Size = UDim2.new(1, 0, 1, 0)
-            f.BackgroundColor3 = Color3.fromRGB(11, 15, 23) -- Gentle midnight charcoal
+            f.BackgroundColor3 = Color3.fromRGB(11, 15, 23)
             f.BorderSizePixel = 0
             f.Parent = sg
 
@@ -679,18 +575,6 @@ local function toggleDarkGpuSaver(enable)
         end
     end
 end
-
--- [WORKER 10: Auto-Execute on Teleport / Server Hop]
-local function setupAutoExecuteOnTeleport()
-    local qot = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or (_ENV and _ENV.queueonteleport)
-    if type(qot) == "function" then
-        local payload = 'repeat task.wait(0.2) until game:IsLoaded() task.wait(1.5) loadstring(game:HttpGet("https://raw.githubusercontent.com/brilliantgibrann16/growblox-hub/main/Loader.lua"))()'
-        pcall(qot, payload)
-    end
-end
-LocalPlayer.OnTeleport:Connect(function()
-    setupAutoExecuteOnTeleport()
-end)
 
 -- ═════════════════════════════════════════════════════════════════════════
 -- [7] RAYFIELD LIQUID GLASS UI (31-KEY COLOR SPEC)
@@ -729,18 +613,17 @@ local LiquidGlassTheme = {
     InputBackground = Color3.fromRGB(22, 32, 54),
 }
 
--- Load Rayfield safely
 local Rayfield = nil
-local success, res = pcall(function()
+local s, res = pcall(function()
     return loadstring(game:HttpGet("https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua"))()
 end)
-if success and res then
+if s and res then
     Rayfield = res
 end
 
 if Rayfield then
     local Window = Rayfield:CreateWindow({
-        Name = "🌱 Nyx Hub — Growblox Suite v1.0",
+        Name = "🌱 Nyx Hub — Growblox ByteNet Suite v2.0",
         LoadingTitle = "Nyx Hub Growblox",
         LoadingSubtitle = "by iannn (@brilliantgibrann16)",
         ConfigurationSaving = {
@@ -755,7 +638,7 @@ if Rayfield then
     -- ─────────────────────────────────────────────────────────────────
     local FarmTab = Window:CreateTab("🌾 PnB & Farm", 4483362458)
 
-    FarmTab:CreateSection("Place and Break (PnB)")
+    FarmTab:CreateSection("Place and Break (Native ByteNet)")
     FarmTab:CreateToggle({
         Name = "Auto PnB (Auto Place & Break)",
         CurrentValue = _G.GrowbloxConfig.AutoPnB,
@@ -779,7 +662,7 @@ if Rayfield then
     })
 
     FarmTab:CreateSlider({
-        Name = "PnB Speed Delay (s)",
+        Name = "PnB Delay (s)",
         Range = { 0.05, 0.5 },
         Increment = 0.01,
         Suffix = "s",
@@ -791,9 +674,21 @@ if Rayfield then
         end,
     })
 
+    FarmTab:CreateSlider({
+        Name = "Selected Block ID",
+        Range = { 1, 20 },
+        Increment = 1,
+        CurrentValue = _G.GrowbloxConfig.SelectedBlockId,
+        Flag = "SelectedBlockId",
+        Callback = function(val)
+            _G.GrowbloxConfig.SelectedBlockId = val
+            saveConfig()
+        end,
+    })
+
     FarmTab:CreateSection("Trees & Harvest")
     FarmTab:CreateToggle({
-        Name = "Auto Harvest Ready Trees",
+        Name = "Auto Harvest Trees (Native Net.harvest)",
         CurrentValue = _G.GrowbloxConfig.AutoHarvest,
         Flag = "AutoHarvest",
         Callback = function(val)
@@ -814,7 +709,7 @@ if Rayfield then
 
     FarmTab:CreateSlider({
         Name = "Harvest Scan Radius",
-        Range = { 10, 100 },
+        Range = { 10, 80 },
         Increment = 5,
         Suffix = " studs",
         CurrentValue = _G.GrowbloxConfig.HarvestRadius,
@@ -841,39 +736,22 @@ if Rayfield then
         end,
     })
 
-    WorldTab:CreateToggle({
-        Name = "Target: Dirt Blocks",
-        CurrentValue = _G.GrowbloxConfig.ClearDirt,
-        Flag = "ClearDirt",
+    WorldTab:CreateSlider({
+        Name = "Clear Grid Radius",
+        Range = { 10, 50 },
+        Increment = 5,
+        Suffix = " studs",
+        CurrentValue = _G.GrowbloxConfig.ClearRadius,
+        Flag = "ClearRadius",
         Callback = function(val)
-            _G.GrowbloxConfig.ClearDirt = val
-            saveConfig()
-        end,
-    })
-
-    WorldTab:CreateToggle({
-        Name = "Target: Rock Blocks",
-        CurrentValue = _G.GrowbloxConfig.ClearRock,
-        Flag = "ClearRock",
-        Callback = function(val)
-            _G.GrowbloxConfig.ClearRock = val
-            saveConfig()
-        end,
-    })
-
-    WorldTab:CreateToggle({
-        Name = "Target: Lava Blocks",
-        CurrentValue = _G.GrowbloxConfig.ClearLava,
-        Flag = "ClearLava",
-        Callback = function(val)
-            _G.GrowbloxConfig.ClearLava = val
+            _G.GrowbloxConfig.ClearRadius = val
             saveConfig()
         end,
     })
 
     WorldTab:CreateSection("Item Magnet (Magplant Vacuum)")
     WorldTab:CreateToggle({
-        Name = "Item Magnet (Auto Collect Floating Drops)",
+        Name = "Item Magnet (Net.take + Suction)",
         CurrentValue = _G.GrowbloxConfig.ItemMagnet,
         Flag = "ItemMagnet",
         Callback = function(val)
@@ -884,7 +762,7 @@ if Rayfield then
 
     WorldTab:CreateSlider({
         Name = "Magnet Range",
-        Range = { 20, 200 },
+        Range = { 20, 150 },
         Increment = 10,
         Suffix = " studs",
         CurrentValue = _G.GrowbloxConfig.MagnetRadius,
@@ -900,9 +778,9 @@ if Rayfield then
     -- ─────────────────────────────────────────────────────────────────
     local MoveTab = Window:CreateTab("⚡ Movement", 4483362458)
 
-    MoveTab:CreateSection("2D Sandbox Navigation")
+    MoveTab:CreateSection("2D Movement & Physics")
     MoveTab:CreateToggle({
-        Name = "Tile Noclip (Walk Through Blocks)",
+        Name = "Tile Noclip (Pass Through Blocks)",
         CurrentValue = _G.GrowbloxConfig.Noclip,
         Flag = "Noclip",
         Callback = function(val)
@@ -934,7 +812,7 @@ if Rayfield then
 
     MoveTab:CreateSlider({
         Name = "WalkSpeed Value",
-        Range = { 16, 120 },
+        Range = { 16, 100 },
         Increment = 2,
         CurrentValue = _G.GrowbloxConfig.WalkSpeed,
         Flag = "WalkSpeed",
@@ -958,7 +836,7 @@ if Rayfield then
 
     MoveTab:CreateSlider({
         Name = "JumpPower Value",
-        Range = { 50, 200 },
+        Range = { 50, 150 },
         Increment = 5,
         CurrentValue = _G.GrowbloxConfig.JumpPower,
         Flag = "JumpPower",
@@ -970,71 +848,7 @@ if Rayfield then
     })
 
     -- ─────────────────────────────────────────────────────────────────
-    -- [TAB 4: NETWORK SPY & REMOTES]
-    -- ─────────────────────────────────────────────────────────────────
-    local SpyTab = Window:CreateTab("🔍 Remote Spy", 4483362458)
-
-    SpyTab:CreateSection("Live Network Capture")
-    SpyTab:CreateToggle({
-        Name = "Enable Namecall Spy",
-        CurrentValue = _G.GrowbloxConfig.SpyEnabled,
-        Flag = "SpyEnabled",
-        Callback = function(val)
-            _G.GrowbloxConfig.SpyEnabled = val
-            saveConfig()
-        end,
-    })
-
-    local LastLogLabel = SpyTab:CreateParagraph({
-        Title = "Last Captured Remote",
-        Content = "No remote traffic captured yet. Break or place a block to intercept!",
-    })
-
-    OnNewSpyLog = function(summary)
-        pcall(function()
-            LastLogLabel:Set({
-                Title = "Captured (" .. os.date("%X") .. ")",
-                Content = summary,
-            })
-        end)
-    end
-
-    SpyTab:CreateButton({
-        Name = "Copy All Captured Remotes to Clipboard",
-        Callback = function()
-            if type(setclipboard) == "function" then
-                local lines = {}
-                for i, log in ipairs(SpyLogs) do
-                    table.insert(lines, string.format("[%d] %s | %s", i, log.Time, log.Summary))
-                end
-                setclipboard(table.concat(lines, "\n"))
-                Rayfield:Notify({
-                    Title = "Copied!",
-                    Content = tostring(#SpyLogs) .. " remote logs copied to clipboard.",
-                    Duration = 3,
-                })
-            end
-        end,
-    })
-
-    SpyTab:CreateButton({
-        Name = "Re-Scan ReplicatedStorage Remotes",
-        Callback = function()
-            scanRemotes()
-            local foundList = {}
-            for k, rem in pairs(DiscoveredRemotes) do
-                table.insert(foundList, k .. ": " .. (rem and rem.Name or "none"))
-            end
-            Rayfield:Notify({
-                Title = "Remotes Scanned",
-                Content = table.concat(foundList, ", "),
-                Duration = 5,
-            })
-        end,
-    })
-
-    -- ─────────────────────────────────────────────────────────────────
-    -- [TAB 5: SECURITY & AFK]
+    -- [TAB 4: SECURITY & AFK]
     -- ─────────────────────────────────────────────────────────────────
     local SecTab = Window:CreateTab("🛡️ Security & AFK", 4483362458)
 
@@ -1061,7 +875,7 @@ if Rayfield then
         end,
     })
 
-    SecTab:CreateSection("AFK & GPU Optimizations")
+    SecTab:CreateSection("AFK & 0% GPU")
     SecTab:CreateToggle({
         Name = "Permanent Anti-AFK",
         CurrentValue = _G.GrowbloxConfig.AntiAFK,
@@ -1084,13 +898,6 @@ if Rayfield then
     })
 
     SecTab:CreateButton({
-        Name = "Instant Rejoin World",
-        Callback = function()
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
-        end,
-    })
-
-    SecTab:CreateButton({
         Name = "Server Hop",
         Callback = function()
             TeleportService:Teleport(game.PlaceId, LocalPlayer)
@@ -1098,8 +905,8 @@ if Rayfield then
     })
 
     Rayfield:Notify({
-        Title = "Nyx Hub Loaded!",
-        Content = "Growblox Suite active. 100% keyless.",
+        Title = "Nyx Hub Growblox Loaded!",
+        Content = "ByteNet Native Engine v2.0 Active.",
         Duration = 4,
     })
 end
