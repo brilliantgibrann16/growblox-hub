@@ -108,6 +108,16 @@ _G.GrowbloxConfig = {
     ItemMagnet = false,
     MagnetRadius = 60,
 
+    -- Auto World Hopper & World Rotator
+    AutoWorldHop = false,
+    WorldListText = "START, FARM1, FARM2, GEMS1",
+    WorldHopInterval = 180, -- Seconds per world before hopping to next
+    RandomWorldPrefix = "FARM",
+    RandomWorldHop = false,
+    AutoClearOnEnter = true,
+    AutoHarvestOnEnter = true,
+    AutoCollectOnEnter = true,
+
     -- Player & Physics
     WalkSpeed = 16,
     JumpPower = 50,
@@ -274,6 +284,32 @@ local function sendTakeDrop(dropUid, wantAmount)
         pcall(function()
             WorldRemotes.TakeDrop:InvokeServer(dropUid)
         end)
+    end
+end
+
+-- 5. WORLD HOPPING & ENTER WORLD DISPATCHER
+local function sendEnterWorld(worldName)
+    worldName = tostring(worldName or ""):upper():gsub("%s+", "")
+    if worldName == "" then return end
+
+    -- Channel 1: Net.CALLS.SwapWorld via Net.call
+    if Net and type(Net.call) == "function" then
+        pcall(function()
+            Net.call("SwapWorld", worldName)
+        end)
+    end
+
+    -- Channel 2: WorldRemotes.EnterWorld / SwapWorld
+    if WorldRemotes then
+        if WorldRemotes:FindFirstChild("EnterWorld") then
+            pcall(function()
+                WorldRemotes.EnterWorld:InvokeServer(worldName)
+            end)
+        elseif WorldRemotes:FindFirstChild("SwapWorld") then
+            pcall(function()
+                WorldRemotes.SwapWorld:InvokeServer(worldName)
+            end)
+        end
     end
 end
 
@@ -473,6 +509,50 @@ for _, p in ipairs(Players:GetPlayers()) do
     end
 end
 
+-- [WORKER 6.1: Auto World Hopper & Infinite World Rotator]
+task.spawn(function()
+    local currentWorldIndex = 1
+    while true do
+        task.wait(1)
+        if _ENV.__GrowbloxHubSession ~= MY_SESSION_ID then break end
+
+        if _G.GrowbloxConfig.AutoWorldHop then
+            local interval = _G.GrowbloxConfig.WorldHopInterval or 180
+            for sec = 1, interval do
+                task.wait(1)
+                if not _G.GrowbloxConfig.AutoWorldHop or _ENV.__GrowbloxHubSession ~= MY_SESSION_ID then
+                    break
+                end
+            end
+
+            if _G.GrowbloxConfig.AutoWorldHop then
+                local targetWorld = ""
+                if _G.GrowbloxConfig.RandomWorldHop then
+                    local prefix = _G.GrowbloxConfig.RandomWorldPrefix or "FARM"
+                    targetWorld = prefix .. tostring(math.random(100, 9999))
+                else
+                    local rawList = _G.GrowbloxConfig.WorldListText or ""
+                    local worlds = {}
+                    for w in rawList:gmatch("[^,%s]+") do
+                        table.insert(worlds, w)
+                    end
+                    if #worlds > 0 then
+                        currentWorldIndex = ((currentWorldIndex - 1) % #worlds) + 1
+                        targetWorld = worlds[currentWorldIndex]
+                        currentWorldIndex = currentWorldIndex + 1
+                    end
+                end
+
+                if targetWorld ~= "" then
+                    warn("[Nyx Hub] Auto-Hopping to World: " .. targetWorld)
+                    sendEnterWorld(targetWorld)
+                    task.wait(5)
+                end
+            end
+        end
+    end
+end)
+
 -- [WORKER 7: Character Physics, Noclip & Respawn Reapplication]
 RunService.Stepped:Connect(function()
     if _ENV.__GrowbloxHubSession ~= MY_SESSION_ID then return end
@@ -535,7 +615,20 @@ task.spawn(function()
     end
 end)
 
--- [WORKER 9: Dark 0% GPU Saver (Potato AFK)]
+-- [WORKER 10: Auto-Execute on Teleport / Server Hop & Solara Anti-Crash]
+local function setupAutoExecuteOnTeleport()
+    local qot = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or (_ENV and _ENV.queueonteleport)
+    if type(qot) == "function" then
+        local payload = 'repeat task.wait(0.2) until game:IsLoaded() task.wait(1.5) loadstring(game:HttpGet("https://raw.githubusercontent.com/brilliantgibrann16/growblox-hub/main/Loader.lua"))()'
+        pcall(qot, payload)
+    end
+end
+LocalPlayer.OnTeleport:Connect(function()
+    setupAutoExecuteOnTeleport()
+end)
+
+-- Solara v3 Compatibility Bridge: Auto queue on world swap
+setupAutoExecuteOnTeleport()
 local DarkFrame = nil
 local function toggleDarkGpuSaver(enable)
     if enable then
@@ -774,7 +867,71 @@ if Rayfield then
     })
 
     -- ─────────────────────────────────────────────────────────────────
-    -- [TAB 3: MOVEMENT & PHYSICS]
+    -- [TAB 3: AUTO ROTATOR / WORLD HOPPER]
+    -- ─────────────────────────────────────────────────────────────────
+    local HopTab = Window:CreateTab("🌐 World Rotator", 4483362458)
+
+    HopTab:CreateSection("Auto World Hopper (Tinggal Diem AFK)")
+    HopTab:CreateToggle({
+        Name = "Enable Auto World Rotator",
+        CurrentValue = _G.GrowbloxConfig.AutoWorldHop,
+        Flag = "AutoWorldHop",
+        Callback = function(val)
+            _G.GrowbloxConfig.AutoWorldHop = val
+            saveConfig()
+        end,
+    })
+
+    HopTab:CreateInput({
+        Name = "World List (Pisahkan Koma)",
+        PlaceholderText = "FARM1, FARM2, GEMS1",
+        RemoveTextAfterFocusLost = false,
+        CurrentValue = _G.GrowbloxConfig.WorldListText,
+        Flag = "WorldListText",
+        Callback = function(val)
+            _G.GrowbloxConfig.WorldListText = val
+            saveConfig()
+        end,
+    })
+
+    HopTab:CreateSlider({
+        Name = "Waktu per World (Detik)",
+        Range = { 30, 600 },
+        Increment = 10,
+        Suffix = "s",
+        CurrentValue = _G.GrowbloxConfig.WorldHopInterval,
+        Flag = "WorldHopInterval",
+        Callback = function(val)
+            _G.GrowbloxConfig.WorldHopInterval = val
+            saveConfig()
+        end,
+    })
+
+    HopTab:CreateSection("Random World Discovery (Cari World Kosong)")
+    HopTab:CreateToggle({
+        Name = "Random World Hop (Auto Prefix)",
+        CurrentValue = _G.GrowbloxConfig.RandomWorldHop,
+        Flag = "RandomWorldHop",
+        Callback = function(val)
+            _G.GrowbloxConfig.RandomWorldHop = val
+            saveConfig()
+        end,
+    })
+
+    HopTab:CreateInput({
+        Name = "Random World Prefix",
+        PlaceholderText = "FARM",
+        RemoveTextAfterFocusLost = false,
+        CurrentValue = _G.GrowbloxConfig.RandomWorldPrefix,
+        Flag = "RandomWorldPrefix",
+        Callback = function(val)
+            _G.GrowbloxConfig.RandomWorldPrefix = val
+            saveConfig()
+        end,
+    })
+
+    -- ─────────────────────────────────────────────────────────────────
+    -- [TAB 4: MOVEMENT & PHYSICS]
     -- ─────────────────────────────────────────────────────────────────
     local MoveTab = Window:CreateTab("⚡ Movement", 4483362458)
 
@@ -848,7 +1005,7 @@ if Rayfield then
     })
 
     -- ─────────────────────────────────────────────────────────────────
-    -- [TAB 4: SECURITY & AFK]
+    -- [TAB 5: SECURITY & AFK]
     -- ─────────────────────────────────────────────────────────────────
     local SecTab = Window:CreateTab("🛡️ Security & AFK", 4483362458)
 
